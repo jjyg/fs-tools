@@ -25,8 +25,16 @@ class Header
 	attr_accessor :type, :creator, :byte_per_sector, :sector_per_cluster, :reserved_sector_count, :number_of_fat,
 			:max_root_entry, :total_sectors, :sector_per_fat, :root_dir_cluster, :volume_label, :fat_type
 
-	def initialize(vol, type=:fat32)
+	def initialize(vol, type=nil)
 		hdr = vol.read(0, 512)
+		if not type
+			fat16_type = hdr[0x36, 8].trimendspc
+			fat32_type = hdr[0x52, 8].trimendspc
+			type = :fat12 if fat16_type == 'FAT12'
+			type = :fat16 if fat16_type == 'FAT16'
+			type = :fat32 if fat32_type == 'FAT32'
+			puts "Fat type autodetect #{type.inspect}" if $VERBOSE
+		end
 		@type = type
 		@creator = hdr[3, 8].trimendspc
 		@byte_per_sector = hdr.word_at 0xb
@@ -85,7 +93,7 @@ p d if $DEBUG
 			f.cluster &= 0xffff if vol.header.type != :fat32
 			break if f.shortname[0] == ?\0
 			if f.attr == 0xf
-				i, n = decode_long_filename(d)
+				_, n = decode_long_filename(d)
 				# i should be a sequence number, with 0x40 set for last entry (eg 0x43..2..1)
 				# but deleted have all i = 0xe5
 				longname = n+longname
@@ -210,12 +218,25 @@ puts "FAT tracks #{cluster_count} clusters",
 end
 end
 
+if __FILE__ == $0
 v = Fat::Volume.new(ARGV.shift)
 
-# walk to the path
 path = ARGV.shift.to_s
+if not path
+	# ls -lR
+	dump_dir = lambda { |cluster, curpath|
+		v.read_directory(cluster).list.each { |e|
+			p = "#{curpath}/#{e.name}"
+			if e.dir?
+				puts "#{p}/"
+				dump_dir[e.cluster, "#{p}/"]
+			end
+		}
+	}
+	dump_dir[:root, '/']
+else
 dir = :root
-path.split('/').each { |name|
+File.dirname(path).split('/').each { |name|
 	puts name
 	abort "#{name} not found" unless sd = v.read_directory(dir).list.find { |f| f.name.downcase == name.downcase }
 	dir = sd.cluster
@@ -246,3 +267,5 @@ recover = lambda { |subdir, cs|
 }
 recover['', dir]
 puts "total recoverable size: #{totalsize.to_size}"
+end
+end
