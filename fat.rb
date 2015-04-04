@@ -88,9 +88,9 @@ class Directory
 		chn = [] if chn.length > 1000
 		vol.read_fat_data(clust, chn).scan(/.{32}/m) { |d|
 			idx += 1
-p d if $DEBUG
 			f = File.new(d, longname, [clust, idx])
 			f.cluster &= 0xffff if vol.header.type != :fat32
+p f if $DEBUG
 			break if f.shortname[0] == ?\0
 			if f.attr == 0xf
 				_, n = decode_long_filename(d)
@@ -134,7 +134,7 @@ class Volume
 	attr_accessor :fd, :header, :fat
 	attr_accessor :data_sector_offset, :rootdir_sector_offset, :byte_per_cluster
 	def initialize(file)
-		@fd = ::File.open(file, 'rb+')
+		@fd = ::File.open(file, 'rb')
 		@header = Header.new(self)
 p @header if $VERBOSE
 		@fat = Fat.new(self)
@@ -220,52 +220,36 @@ end
 
 if __FILE__ == $0
 v = Fat::Volume.new(ARGV.shift)
-
-path = ARGV.shift.to_s
-if not path
+if ARGV.empty?
 	# ls -lR
 	dump_dir = lambda { |cluster, curpath|
 		v.read_directory(cluster).list.each { |e|
 			p = "#{curpath}/#{e.name}"
 			if e.dir?
-				puts "#{p}/"
+				puts "#{p}/".inspect
 				dump_dir[e.cluster, "#{p}/"]
+			else
+				puts p.inspect
 			end
 		}
 	}
-	dump_dir[:root, '/']
+	dump_dir[:root, '']
 else
-dir = :root
-File.dirname(path).split('/').each { |name|
-	puts name
-	abort "#{name} not found" unless sd = v.read_directory(dir).list.find { |f| f.name.downcase == name.downcase }
-	dir = sd.cluster
-}
-
-# find recoverable files in path & subdirs (ignore deleted dirs)
-totalsize = 0
-recover = lambda { |subdir, cs|
-	puts "recovery in #{File.join(path, subdir).inspect}" if $VERBOSE
-	v.read_directory(cs).list.each { |f|
-		if f.dir?
-			next if f.deleted?
-			next if f.name == '.' or f.name == '..'
-			next if subdir.count('/') > 20
-			recover[File.join(subdir, f.name), f.cluster]
-		else
-			next if not f.deleted?
-			chn = v.read_chain(f.cluster)
-			if f.size > (chn.length-1)*v.byte_per_cluster and f.size <= chn.length*v.byte_per_cluster
-				puts "recoverable #{File.join(subdir, f.name).inspect}"
-				# v.read_file_data(f)
-				totalsize += chn.length*v.byte_per_cluster
-			else
-				#puts "missing data in #{f.name.inspect}"
+	ARGV.each { |path|
+		cluster = :root
+		path.split('/').each { |path_elem|
+			next if path_elem == ''
+			cld = v.read_directory(cluster).list.find { |e| e.name.downcase == path_elem.downcase }
+			raise "unable to find #{path_elem.inspect}" if not cld
+			cluster = cld.cluster
+			if not cld.dir?
+				File.open(path_elem, 'wb') { |fd|
+					fd.write v.read_file_data(cld)
+				}
+				puts "saved #{path_elem}"
+				break
 			end
-		end
+		}
 	}
-}
-recover['', dir]
-puts "total recoverable size: #{totalsize.to_size}"
 end
 end
