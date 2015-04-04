@@ -109,7 +109,28 @@ p f if $DEBUG
 	end
 end
 
-class Fat
+class Fat16
+	attr_accessor :fat
+	def initialize(vol)
+		@fat = vol.read_sect(vol.header.reserved_sector_count, vol.header.sector_per_fat)
+	end
+
+	def read_ptr(nr)
+		@fat.word_at(nr*2) & 0xffff
+	end
+
+	# read a chain of ptrs upto termination tag (included)
+	def read_chain(clust, limit=-1)
+		chain = [clust]
+		while clust >= 2 and clust <= 0xffef and (limit < 0 or limit > chain.length) and clust < @fat.length/2+2
+			clust = read_ptr(clust)
+			chain << clust
+		end
+		chain
+	end
+end
+
+class Fat32
 	attr_accessor :fat
 	def initialize(vol)
 		@fat = vol.read_sect(vol.header.reserved_sector_count, vol.header.sector_per_fat)
@@ -137,7 +158,11 @@ class Volume
 		@fd = ::File.open(file, 'rb')
 		@header = Header.new(self)
 p @header if $VERBOSE
-		@fat = Fat.new(self)
+		if @header.type == :fat32
+			@fat = Fat32.new(self)
+		else
+			@fat = Fat16.new(self)
+		end
 
 		@byte_per_cluster = @header.byte_per_sector*@header.sector_per_cluster
 		@rootdir_sector_offset = @header.reserved_sector_count + @header.number_of_fat*@header.sector_per_fat
@@ -243,6 +268,7 @@ else
 			raise "unable to find #{path_elem.inspect}" if not cld
 			cluster = cld.cluster
 			if not cld.dir?
+				p cld if $VERBOSE
 				File.open(path_elem, 'wb') { |fd|
 					fd.write v.read_file_data(cld)
 				}
