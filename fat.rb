@@ -109,6 +109,32 @@ p f if $DEBUG
 	end
 end
 
+class Fat12
+	attr_accessor :fat
+	def initialize(vol)
+		@fat = vol.read_sect(vol.header.reserved_sector_count, vol.header.sector_per_fat)
+	end
+
+	def read_ptr(nr)
+		w = @fat.word_at(nr*3/2) & 0xffff
+		if nr % 2 == 0
+			w & 0xfff
+		else
+			w >> 4
+		end
+	end
+
+	# read a chain of ptrs upto termination tag (included)
+	def read_chain(clust, limit=-1)
+		chain = [clust]
+		while clust >= 2 and (limit < 0 or limit > chain.length) and clust < @fat.length/2+2
+			clust = read_ptr(clust)
+			chain << clust
+		end
+		chain
+	end
+end
+
 class Fat16
 	attr_accessor :fat
 	def initialize(vol)
@@ -158,10 +184,10 @@ class Volume
 		@fd = ::File.open(file, 'rb')
 		@header = Header.new(self)
 p @header if $VERBOSE
-		if @header.type == :fat32
-			@fat = Fat32.new(self)
-		else
-			@fat = Fat16.new(self)
+		@fat = case @header.type
+		when :fat32; Fat32.new(self)
+		when :fat16; Fat16.new(self)
+		when :fat12; Fat12.new(self)
 		end
 
 		@byte_per_cluster = @header.byte_per_sector*@header.sector_per_cluster
@@ -211,7 +237,9 @@ puts "FAT tracks #{cluster_count} clusters",
 			return [:root] if @header.type != :fat32
 			clust = @header.root_dir_cluster
 		end
-		@fat.read_chain(clust)[0..-2]
+		chain = @fat.read_chain(clust)
+		puts "cluster chain: #{chain.map { |c| '0x%X' % c }.join(' ')}" if $DEBUG
+		chain[0..-2]
 	end
 
 	# returns the content of the fat file starting at clust
@@ -255,6 +283,7 @@ if ARGV.empty?
 				dump_dir[e.cluster, "#{p}/"]
 			else
 				puts p.inspect
+				puts "#{e.size} #{v.read_file_data(e)[0, 1024].inspect}#{'...' if e.size > 1024}" if $DEBUG
 			end
 		}
 	}
